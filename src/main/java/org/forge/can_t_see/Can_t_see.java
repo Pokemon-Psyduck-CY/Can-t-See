@@ -47,8 +47,8 @@ public class Can_t_see {
 
 
 
-    public Can_t_see() {
-        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
+    public Can_t_see(FMLJavaModLoadingContext ctx) {
+        IEventBus modEventBus = ctx.getModEventBus();
 
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
@@ -65,7 +65,8 @@ public class Can_t_see {
 
 
         // Register our mod's ForgeConfigSpec so that Forge can create and load the config file for us
-        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        ModLoadingContext modLoadingContext = ModLoadingContext.get();
+        modLoadingContext.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
