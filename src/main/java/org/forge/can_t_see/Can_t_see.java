@@ -33,8 +33,8 @@ import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 import org.slf4j.Logger;
+import net.minecraft.util.RandomSource;
 
-import java.util.Random;
 
 @Mod(Can_t_see.MODID)
 public class Can_t_see {
@@ -95,7 +95,7 @@ public class Can_t_see {
 
             if (isFirstLoad) {
                 isFirstLoad = false;
-                Random random = new Random();
+                RandomSource random = RandomSource.create();
 
                 if (random.nextFloat() < 0.5f) {
                     generateMysterySign(player, world);
@@ -105,7 +105,7 @@ public class Can_t_see {
 
         private static void generateMysterySign(Player player, ServerLevel world) {
             BlockPos playerPos = player.blockPosition();
-            Random random = new Random();
+            RandomSource random = RandomSource.create();
 
             int radius = 10 + random.nextInt(6);
             double angle = random.nextDouble() * Math.PI * 2;
