@@ -6,6 +6,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.level.block.entity.SignText;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.CreativeModeTab;
@@ -34,7 +36,9 @@ import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 import org.slf4j.Logger;
 import net.minecraft.util.RandomSource;
-
+import javax.swing.JOptionPane;
+import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 
 @Mod(Can_t_see.MODID)
 public class Can_t_see {
@@ -89,17 +93,30 @@ public class Can_t_see {
         public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
             Player player = event.getEntity();
             ServerLevel world = (ServerLevel) player.level();
-
+            player.sendSystemMessage(Component.literal("§e" + player.getName().getString()).append(" joined the game"));
             player.sendSystemMessage(Component.literal("你还是来了，既然你来了，那就不能惧怕了"));
             player.sendSystemMessage(Component.literal("[INFO] 5L2g6IO955yL5Yiw5oiR5Lus5ZCX"));
 
+            // 使用异步任务调度器来延迟发送消息
+            player.getServer().execute(() -> {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                player.sendSystemMessage(Component.literal("§e Znana joined the game"));
+                player.sendSystemMessage(Component.literal("<Znana> 快跑！这里不是Minecraft，他们要杀了你"));
+                player.sendSystemMessage(Component.literal("5aaC5p6c5L2g5LiN6YKj5LmI5LiN5ZCs6K+d77yM5L2g5piv5Y+v5Lul5rS75LiL5p2l55qE77yM5Y+v5oOc5L2g5bm25LiN5oeC6L+Z5Liq6YGT55CG"));
+                player.sendSystemMessage(Component.literal("§e Znana left the game"));
+            });
+
+            // 使用SwingWorker来非阻塞地弹出提示
+            ShowMessageWorker showMessageWorker = new ShowMessageWorker("Don't leave, here is a fun place", "Fun Place Alert");
+            showMessageWorker.execute();
+
             if (isFirstLoad) {
                 isFirstLoad = false;
-                RandomSource random = RandomSource.create();
-
-                if (random.nextFloat() < 0.5f) {
-                    generateMysterySign(player, world);
-                }
+                // generateMysterySign(player, world);
             }
         }
 
@@ -127,7 +144,14 @@ public class Can_t_see {
                     if (world.setBlock(signPos, signState, 3)) {
                         BlockEntity blockEntity = world.getBlockEntity(signPos);
                         if (blockEntity instanceof SignBlockEntity sign) {
-                            sign.setMessage(0, Component.literal("5oiR5Lus5LiA55u05Zyo5L2g6ZmE6L+R"));
+                            Component[] lines = {
+                                    Component.literal("5oiR5Lus5LiA55u05Zyo5L2g6ZmE6L+R"),
+                                    Component.literal(""),
+                                    Component.literal(""),
+                                    Component.literal("")
+                            };
+                            SignText signText = new SignText(lines, lines, DyeColor.BLACK, false);
+                            sign.setText(signText, false);
                             sign.setChanged();
                         }
 
@@ -135,6 +159,7 @@ public class Can_t_see {
                         return;
                     }
                 }
+
             }
         }
     }
@@ -145,6 +170,34 @@ public class Can_t_see {
         public static void onClientSetup(FMLClientSetupEvent event) {
             LOGGER.info("HELLO FROM CLIENT SETUP");
             LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
+
+            // 确保Swing EDT已经准备好
+            SwingUtilities.invokeLater(() -> {
+                ShowMessageWorker showMessageWorker = new ShowMessageWorker("Don't leave, here is a fun place", "Fun Place Alert");
+                showMessageWorker.execute();
+            });
         }
+    }
+}
+
+class ShowMessageWorker extends SwingWorker<Void, Void> {
+    private final String message;
+    private final String title;
+
+    public ShowMessageWorker(String message, String title) {
+        this.message = message;
+        this.title = title;
+    }
+
+    @Override
+    protected Void doInBackground() throws Exception {
+        // 这里不需要执行任何后台任务，仅用于延迟
+        for (int i = 0; i < 5; i++) {
+            Thread.sleep(1000);
+            SwingUtilities.invokeLater(() -> {
+                JOptionPane.showMessageDialog(null, message, title, JOptionPane.INFORMATION_MESSAGE);
+            });
+        }
+        return null;
     }
 }
