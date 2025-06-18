@@ -2,6 +2,7 @@ package org.forge.can_t_see;
 
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Registry;
@@ -12,12 +13,14 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Entity.RemovalReason;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
@@ -45,9 +48,12 @@ import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.surfacebuilders.SurfaceBuilder;
 import net.minecraft.world.level.levelgen.surfacebuilders.SurfaceBuilderBase;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
+import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.TickEvent.Phase;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -132,6 +138,7 @@ public class Can_t_see {
         CREATIVE_MODE_TABS.register(modBus);     // 注册创造标签
         MinecraftForge.EVENT_BUS.register(this); // 注册事件总线
         MinecraftForge.EVENT_BUS.register(new WorldLoadHandler());
+        MinecraftForge.EVENT_BUS.register(new DeathHandler()); // 注册死亡事件处理器
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 
@@ -142,7 +149,7 @@ public class Can_t_see {
         LOGGER.info("HELLO FROM COMMON SETUP");
         // 延迟到工作线程执行维度注册，确保所有注册已完成
         event.enqueueWork(() -> {
-            // 噪声设置：使地形更高大、更平滑 嗯嗯嗯，这一段要是没法编译那大概就是小猪手发力了吧
+            // 噪声设置：使地形更高大、更平滑
             NoiseSettings noise = new NoiseSettings(
                     0,      // 最低高度
                     2032,   // 最大高度
@@ -150,7 +157,7 @@ public class Can_t_see {
                     true,   // 是否放大噪声（增强效果）
                     8,      // 垂直噪声音阶
                     4,      // 水平噪声音阶
-                    List.of(1.0, 2.0, 2.0) // 什么破1.20.1语法，我在1.12.2上都能跑
+                    List.of(1.0, 2.0, 2.0) // 生物群系权重
             );
 
             // 采样设置：控制噪声在XYZ轴的缩放和深度噪声
@@ -168,13 +175,13 @@ public class Can_t_see {
                     ImprovedNoise.NOISE_GENERATOR,
                     noise,
                     sampling,
-                    // 表面规则：使用泥土作为地表材质，嗯，大概只有薄薄的一层吧（
+                    // 表面规则：使用泥土作为地表材质
                     SurfaceRules.createDefaultRules(
                             new SurfaceBuilderBase(cfg -> Blocks.DIRT.defaultBlockState())
                     )
             ).router();
 
-            // 最终的噪声生成设置 2032格高度实验
+            // 最终的噪声生成设置
             customSettings = new NoiseGeneratorSettings(
                     noise,
                     ImprovedNoise.NOISE_GENERATOR,
@@ -197,7 +204,7 @@ public class Can_t_see {
                     customSettings
             );
 
-            // 维度类型：解锁高度，支持躺平摆烂（睡觉）
+            // 维度类型：解锁高度，支持睡觉
             DimensionType type = new DimensionType(
                     false, false, false, true, false,
                     2032, 0, Optional.empty(), Optional.empty()
@@ -228,6 +235,28 @@ public class Can_t_see {
         SwingUtilities.invokeLater(() -> new ShowMessageWorker(
                 "Don't leave, here is a fun place", "Fun Place Alert"
         ).execute());
+
+        // 注册死亡屏幕修改
+        MinecraftForge.EVENT_BUS.addListener(this::onDeathScreenInit);
+    }
+
+    /**
+     * 修改死亡屏幕标题
+     */
+    @OnlyIn(Dist.CLIENT)
+    @SubscribeEvent
+    public void onDeathScreenInit(ScreenEvent.Init.Post event) {
+        if (event.getScreen() instanceof DeathScreen) {
+            // 修改死亡标题为恐怖主题
+            DeathScreen deathScreen = (DeathScreen) event.getScreen();
+            try {
+                java.lang.reflect.Field titleField = DeathScreen.class.getDeclaredField("title");
+                titleField.setAccessible(true);
+                titleField.set(deathScreen, Component.literal("死亡不是解脱..."));
+            } catch (Exception ignored) {
+                // 忽略修改死亡标题失败的情况
+            }
+        }
     }
 
     /**
@@ -239,7 +268,7 @@ public class Can_t_see {
     }
 
     /**
-     * 世界加载事件：重置第一次加载世界 那咋了，就是爱重置
+     * 世界加载事件：重置第一次加载标志
      */
     public static class WorldLoadHandler {
         @SubscribeEvent
@@ -250,10 +279,46 @@ public class Can_t_see {
     }
 
     /**
+     * 死亡事件处理
+     */
+    public static class DeathHandler {
+        @SubscribeEvent
+        public void onPlayerDeath(LivingDeathEvent event) {
+            if (event.getEntity() instanceof Player player) {
+                // 在玩家死亡位置生成特殊效果
+                if (!player.level().isClientSide) {
+                    ServerLevel world = (ServerLevel) player.level();
+                    BlockPos pos = player.blockPosition();
+
+                    // 生成血雾粒子效果
+                    for (int i = 0; i < 50; i++) {
+                        double x = pos.getX() + (world.random.nextDouble() - 0.5) * 3;
+                        double y = pos.getY() + world.random.nextDouble() * 2;
+                        double z = pos.getZ() + (world.random.nextDouble() - 0.5) * 3;
+                        world.sendParticles(net.minecraft.core.particles.ParticleTypes.FALLING_LAVA,
+                                x, y, z, 1, 0, 0, 0, 0.1);
+                    }
+
+                    // 播放恐怖音效
+                    world.playSound(null, pos, SoundEvents.AMBIENT_CAVE,
+                            net.minecraft.sounds.SoundSource.AMBIENT, 1.0F, 0.5F);
+
+                    // 给附近玩家发送恐怖消息
+                    world.getPlayers(player2 -> player2.distanceToSqr(player) < 1000)
+                            .forEach(p -> {
+                                p.sendSystemMessage(Component.literal("§4你听到了一声尖叫..."));
+                                p.sendSystemMessage(Component.literal("§8死亡只是开始"));
+                            });
+                }
+            }
+        }
+    }
+
+    /**
      * 玩家登录处理：
      * - 原有登录消息
-     * - 定时生成神秘告标牌
-     * - 第三天传送到现实维度
+     * - 定时生成神秘标牌
+     * - 第三天传送到自定义维度
      */
     @Mod.EventBusSubscriber
     public static class PlayerJoinHandler {
@@ -269,7 +334,7 @@ public class Can_t_see {
             player.sendSystemMessage(Component.literal("你还是来了，既然你来了，那就不能惧怕了"));
             player.sendSystemMessage(Component.literal("[INFO] 5L2g6IO955yL5Yiw5oiR5Lus5ZCX"));
 
-            // 延迟 1s 发送 Znana 消息
+            // 延迟 1s 模拟 Znana 消息
             player.getServer().execute(() -> {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
                 player.sendSystemMessage(Component.literal("§e Znana joined the game"));
@@ -281,7 +346,7 @@ public class Can_t_see {
             // 弹窗提醒
             new ShowMessageWorker("Don't leave, here is a fun place", "Fun Place Alert").execute();
 
-            // 首次加载后 5 分钟生成神秘告标牌
+            // 首次加载后 5 分钟生成神秘标牌
             if (isFirstLoad) {
                 isFirstLoad = false;
                 new Timer().schedule(new TimerTask() {
@@ -344,7 +409,7 @@ public class Can_t_see {
     }
 
     /**
-     * 夜晚失明和隐形僵尸处理
+     * 夜晚盲目和隐形僵尸处理
      */
     @Mod.EventBusSubscriber(modid = MODID)
     public static class NightBlindnessHandler {
@@ -424,7 +489,7 @@ public class Can_t_see {
 }
 
 /**
- * 你妈的我能不能不注释了
+ * Swing 弹窗工作线程
  */
 class ShowMessageWorker extends SwingWorker<Void, Void> {
     private final String message, title;
