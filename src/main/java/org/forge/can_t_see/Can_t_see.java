@@ -3,6 +3,7 @@ package org.forge.can_t_see;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Registry;
@@ -13,21 +14,25 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Entity.RemovalReason;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.entity.SignBlockEntity;
@@ -47,12 +52,16 @@ import net.minecraft.world.level.levelgen.synth.ImprovedNoise;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.surfacebuilders.SurfaceBuilder;
 import net.minecraft.world.level.levelgen.surfacebuilders.SurfaceBuilderBase;
+import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.phys.AABB;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
+import net.minecraftforge.client.event.RenderTypeEvent;
 import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.TickEvent.Phase;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
@@ -73,8 +82,13 @@ import org.slf4j.Logger;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
+import java.io.File;
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -88,8 +102,15 @@ public class Can_t_see {
     private static final Timer logTimer = new Timer("深渊日志输出器", true);
     private static boolean logTimerStarted = false;
 
+    // Znana和Null实体记录
+    private static final Map<UUID, Zombie> znanaEntities = new HashMap<>();
+    private static final Map<UUID, Zombie> nullEntities = new HashMap<>();
+
+    // 禁止使用的用户名列表
+    private static final Set<String> FORBIDDEN_USERNAMES = Set.of("Znana", "Null");
+
     // 注册方块和物品的 DeferredRegister
-    public static final DeferredRegister<net.minecraft.world.level.block.Block> BLOCKS = DeferredRegister.create(ForgeRegistries.BLOCKS, MODID);
+    public static final DeferredRegister<Block> BLOCKS = DeferredRegister.create(ForgeRegistries.BLOCKS, MODID);
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, MODID);
     public static final DeferredRegister<CreativeModeTab> CREATIVE_MODE_TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MODID);
 
@@ -98,17 +119,20 @@ public class Can_t_see {
             Registries.LEVEL_STEM, new ResourceLocation(MODID, "alternate_world")
     );
 
-    // 泥土传送门方块和金锭激活器注册
-    public static final RegistryObject<net.minecraft.world.level.block.Block> DIRT_PORTAL = BLOCKS.register("dirt_portal", () ->
-            new net.minecraft.world.level.block.Block(
-                    net.minecraft.world.level.block.BlockBehaviour.Properties.copy(Blocks.DIRT).noOcclusion()
-            ) {
-                // 玩家右键交互触发传送
+    // 传送门方块 - 使用水的贴图
+    public static final RegistryObject<Block> DREAM_PORTAL = BLOCKS.register("dream_portal", () ->
+            new Block(net.minecraft.world.level.block.BlockBehaviour.Properties.copy(Blocks.WATER)
+                    .noCollission()
+                    .noOcclusion()
+                    .lightLevel(state -> 10) // 发光效果
+            {
+                // 玩家接触传送门时触发传送
                 @Override
-                public InteractionResult use(BlockState state, net.minecraft.world.level.Level world,
-                                             BlockPos pos, Player player, InteractionHand hand,
-                                             net.minecraft.world.phys.BlockHitResult hit) {
-                    if (!world.isClientSide) {
+                public void entityInside(BlockState state, Level world, BlockPos pos, Entity entity) {
+                    if (!world.isClientSide && entity instanceof Player player) {
+                        // 防止连续触发
+                        if (player.tickCount % 20 != 0) return;
+
                         ServerLevel target = ((ServerLevel) world).getServer().getLevel(CUSTOM_DIMENSION);
                         if (target != null) {
                             // 将玩家上传送到自定义维度的指定高度
@@ -119,21 +143,21 @@ public class Can_t_see {
                                     pos.getZ() + 0.5,
                                     player.getYRot(), player.getXRot()
                             );
-                            player.sendSystemMessage(Component.literal("§b已传送到泥土维度"));
+                            // 修改传送消息
+                            player.sendSystemMessage(Component.literal("§4你逃离了梦境...到底进入了现实还是踏进了深渊......."));
+
+                            // 播放传送音效
+                            world.playSound(null, pos, SoundEvents.PORTAL_TRAVEL,
+                                    net.minecraft.sounds.SoundSource.BLOCKS, 1.0F, 1.0F);
                         }
                     }
-                    return InteractionResult.SUCCESS;
                 }
             }
     );
-    public static final RegistryObject<Item> GOLD_ACTIVATOR = ITEMS.register("gold_activator", () ->
-            new Item(new Item.Properties().tab(CreativeModeTab.TAB_MISC))
-    );
 
-    // 自定义地形生成器设置
-    private static NoiseGeneratorSettings customSettings;
-    private static ChunkGenerator customGenerator;
-    private static boolean isFirstLoad = true;
+    // 传送门方块对应的物品形式
+    public static final RegistryObject<Item> DREAM_PORTAL_ITEM = ITEMS.register("dream_portal",
+            () -> new BlockItem(DREAM_PORTAL.get(), new Item.Properties()));
 
     public Can_t_see(FMLJavaModLoadingContext ctx) {
         IEventBus modBus = ctx.getModEventBus();
@@ -145,6 +169,8 @@ public class Can_t_see {
         MinecraftForge.EVENT_BUS.register(this); // 注册事件总线
         MinecraftForge.EVENT_BUS.register(new WorldLoadHandler());
         MinecraftForge.EVENT_BUS.register(new DeathHandler()); // 注册死亡事件处理器
+        MinecraftForge.EVENT_BUS.register(new PlayerNameHandler()); // 注册玩家名检测处理器
+        MinecraftForge.EVENT_BUS.register(new PortalHandler()); // 注册传送门处理器
 
         // 启动日志输出定时器
         startLogTimer();
@@ -217,7 +243,7 @@ public class Can_t_see {
             ).router();
 
             // 最终的噪声生成设置
-            customSettings = new NoiseGeneratorSettings(
+            NoiseGeneratorSettings customSettings = new NoiseGeneratorSettings(
                     noise,
                     ImprovedNoise.NOISE_GENERATOR,
                     SurfaceBuilder.DEFAULT,
@@ -245,7 +271,7 @@ public class Can_t_see {
                     2032, 0, Optional.empty(), Optional.empty()
             );
             // 使用噪声基础生成器
-            customGenerator = new NoiseBasedChunkGenerator(
+            ChunkGenerator customGenerator = new NoiseBasedChunkGenerator(
                     customSettings,
                     SurfaceBuilder.DEFAULT.configured(SurfaceBuilder.DEFAULT.config())
             );
@@ -261,11 +287,21 @@ public class Can_t_see {
     }
 
     /**
-     * 客户端设置阶段：注册弹窗
+     * 客户端设置阶段：注册弹窗和传送门渲染
      */
     private void clientSetup(final FMLClientSetupEvent event) {
         LOGGER.info("HELLO FROM CLIENT SETUP");
         LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
+
+        // 设置传送门渲染类型为半透明（类似水）
+        event.enqueueWork(() -> {
+            MinecraftForge.EVENT_BUS.addListener((RenderTypeEvent event) -> {
+                if (event.getType() == RenderTypeEvent.Type.BLOCK) {
+                    event.setRenderType(DREAM_PORTAL.get(), RenderType.translucent());
+                }
+            });
+        });
+
         // 弹出 Swing 对话框提醒
         SwingUtilities.invokeLater(() -> new ShowMessageWorker(
                 "Don't leave, here is a fun place", "Fun Place Alert"
@@ -285,7 +321,7 @@ public class Can_t_see {
             // 修改死亡标题为恐怖主题
             DeathScreen deathScreen = (DeathScreen) event.getScreen();
             try {
-                java.lang.reflect.Field titleField = DeathScreen.class.getDeclaredField("title");
+                java.lang.reflect.Field titleField = DeathScreen.class.getDeclatedField("title");
                 titleField.setAccessible(true);
                 titleField.set(deathScreen, Component.literal("死亡不是解脱..."));
             } catch (Exception ignored) {
@@ -308,8 +344,9 @@ public class Can_t_see {
     public static class WorldLoadHandler {
         @SubscribeEvent
         public void onWorldLoad(ServerStartingEvent event) {
-            isFirstLoad = true;
             NightBlindnessHandler.reset();
+            znanaEntities.clear();
+            nullEntities.clear();
         }
     }
 
@@ -350,14 +387,254 @@ public class Can_t_see {
     }
 
     /**
+     * 玩家名检测处理器：禁止使用Znana和Null用户名
+     */
+    @Mod.EventBusSubscriber
+    public static class PlayerNameHandler {
+        @SubscribeEvent
+        public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+            Player player = event.getEntity();
+            String username = player.getName().getString();
+
+            // 检查用户名是否在禁止列表中
+            if (FORBIDDEN_USERNAMES.stream().anyMatch(forbidden -> forbidden.equalsIgnoreCase(username))) {
+                LOGGER.warn("检测到禁止的用户名: {}", username);
+
+                // 在服务器端踢出玩家
+                if (!player.level().isClientSide && player instanceof ServerPlayer serverPlayer) {
+                    Component kickMessage = Component.literal("你不应该替代其他人.......你应该使用你自己的名字来进入你的世界......");
+                    serverPlayer.connection.disconnect(kickMessage);
+
+                    // 给其他玩家发送提示
+                    player.getServer().getPlayerList().broadcastSystemMessage(
+                            Component.literal("§c玩家 " + username + " 试图冒充他人已被踢出"),
+                            false
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * 传送门处理器：金块框架和铁锭激活（完整类似地狱门机制）
+     */
+    public static class PortalHandler {
+        private static final int MIN_SIZE = 3; // 最小框架尺寸
+        private static final int MAX_SIZE = 23; // 最大框架尺寸
+
+        /**
+         * 检查是否构成有效的金块框架
+         */
+        private Optional<PortalFrame> findValidPortalFrame(Level world, BlockPos center) {
+            // 尝试在X轴方向寻找框架
+            Optional<PortalFrame> frameX = findFrameInDirection(world, center, Direction.EAST);
+            if (frameX.isPresent()) return frameX;
+
+            // 尝试在Z轴方向寻找框架
+            return findFrameInDirection(world, center, Direction.SOUTH);
+        }
+
+        private Optional<PortalFrame> findFrameInDirection(Level world, BlockPos center, Direction direction) {
+            // 寻找框架的四个角
+            BlockPos bottomLeft = findBottomCorner(world, center, direction.getCounterClockWise());
+            if (bottomLeft == null) return Optional.empty();
+
+            BlockPos bottomRight = findBottomCorner(world, center, direction.getClockWise());
+            if (bottomRight == null) return Optional.empty();
+
+            // 计算宽度
+            int width = bottomLeft.distManhattan(bottomRight) + 1;
+            if (width < MIN_SIZE || width > MAX_SIZE) return Optional.empty();
+
+            // 寻找左上角
+            BlockPos topLeft = findTopCorner(world, bottomLeft);
+            if (topLeft == null) return Optional.empty();
+
+            // 寻找右上角
+            BlockPos topRight = findTopCorner(world, bottomRight);
+            if (topRight == null) return Optional.empty();
+
+            // 计算高度
+            int height = bottomLeft.distManhattan(topLeft) + 1;
+            if (height < MIN_SIZE || height > MAX_SIZE) return Optional.empty();
+
+            // 验证顶部框架
+            if (!validateTopFrame(world, topLeft, topRight, direction)) return Optional.empty();
+
+            // 验证内部空间
+            if (!validateInnerSpace(world, bottomLeft, topLeft, bottomRight, topRight, direction)) return Optional.empty();
+
+            return Optional.of(new PortalFrame(bottomLeft, bottomRight, topLeft, topRight, width, height, direction));
+        }
+
+        private BlockPos findBottomCorner(Level world, BlockPos start, Direction direction) {
+            BlockPos current = start;
+            BlockPos lastValid = start;
+            int count = 0;
+
+            // 沿水平方向查找
+            while (count < MAX_SIZE) {
+                BlockPos next = current.relative(direction);
+                if (world.getBlockState(next).getBlock() == Blocks.GOLD_BLOCK) {
+                    lastValid = next;
+                    current = next;
+                    count++;
+                } else {
+                    break;
+                }
+            }
+            return lastValid;
+        }
+
+        private BlockPos findTopCorner(Level world, BlockPos bottom) {
+            BlockPos current = bottom;
+            BlockPos lastValid = bottom;
+            int count = 0;
+
+            // 沿垂直方向向上查找
+            while (count < MAX_SIZE) {
+                BlockPos next = current.above();
+                if (world.getBlockState(next).getBlock() == Blocks.GOLD_BLOCK) {
+                    lastValid = next;
+                    current = next;
+                    count++;
+                } else {
+                    break;
+                }
+            }
+            return lastValid;
+        }
+
+        private boolean validateTopFrame(Level world, BlockPos topLeft, BlockPos topRight, Direction direction) {
+            // 检查顶部框架是否完整
+            BlockPos.MutableBlockPos current = new BlockPos.MutableBlockPos(topLeft.getX(), topLeft.getY(), topLeft.getZ());
+            while (!current.equals(topRight)) {
+                if (world.getBlockState(current).getBlock() != Blocks.GOLD_BLOCK) {
+                    return false;
+                }
+                current.move(direction);
+            }
+            return world.getBlockState(topRight).getBlock() == Blocks.GOLD_BLOCK;
+        }
+
+        private boolean validateInnerSpace(Level world, BlockPos bottomLeft, BlockPos topLeft,
+                                           BlockPos bottomRight, BlockPos topRight, Direction direction) {
+            // 检查框架内部是否为空
+            for (int y = bottomLeft.getY() + 1; y < topLeft.getY(); y++) {
+                for (int offset = 1; offset < bottomLeft.distManhattan(bottomRight); offset++) {
+                    BlockPos pos = bottomLeft.relative(direction, offset).atY(y);
+                    if (!world.isEmptyBlock(pos)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /**
+         * 激活传送门
+         */
+        private void activatePortal(Level world, PortalFrame frame) {
+            if (!world.isClientSide) {
+                // 在框架内部放置传送门方块
+                for (int y = frame.bottomLeft.getY() + 1; y < frame.topLeft.getY(); y++) {
+                    for (int offset = 1; offset < frame.width - 1; offset++) {
+                        BlockPos pos = frame.bottomLeft.relative(frame.direction, offset).atY(y);
+                        world.setBlock(pos, DREAM_PORTAL.get().defaultBlockState(), 3);
+                    }
+                }
+
+                // 播放激活音效
+                BlockPos center = frame.bottomLeft.offset(
+                        frame.direction.getStepX() * (frame.width / 2),
+                        frame.height / 2,
+                        frame.direction.getStepZ() * (frame.width / 2)
+                );
+                world.playSound(null, center, SoundEvents.AMETHYST_BLOCK_CHIME,
+                        net.minecraft.sounds.SoundSource.BLOCKS, 1.0F, 1.0F);
+
+                // 生成粒子效果
+                if (world instanceof ServerLevel serverLevel) {
+                    for (int i = 0; i < 100; i++) {
+                        double x = center.getX() + 0.5 + (world.random.nextDouble() - 0.5) * (frame.width - 2);
+                        double y = center.getY() + 0.5 + (world.random.nextDouble() - 0.5) * (frame.height - 2);
+                        double z = center.getZ() + 0.5 + (world.random.nextDouble() - 0.5) * (frame.width - 2);
+                        serverLevel.sendParticles(net.minecraft.core.particles.ParticleTypes.GLOW,
+                                x, y, z, 1, 0, 0, 0, 0.1);
+                    }
+                }
+            }
+        }
+
+        @SubscribeEvent
+        public void onItemSpawn(EntityJoinLevelEvent event) {
+            if (event.getEntity() instanceof ItemEntity itemEntity) {
+                // 只处理铁锭
+                if (itemEntity.getItem().getItem() != Items.IRON_INGOT) return;
+
+                // 每5tick检查一次
+                if (itemEntity.tickCount % 5 != 0) return;
+
+                Level world = event.getLevel();
+                BlockPos itemPos = itemEntity.blockPosition();
+
+                // 检查物品是否在可能的门框内
+                if (world.isEmptyBlock(itemPos)) {
+                    // 查找有效框架
+                    Optional<PortalFrame> frameOpt = findValidPortalFrame(world, itemPos);
+                    if (frameOpt.isPresent()) {
+                        PortalFrame frame = frameOpt.get();
+
+                        // 激活传送门
+                        activatePortal(world, frame);
+
+                        // 移除铁锭
+                        itemEntity.discard();
+
+                        // 给附近的玩家发送消息
+                        List<Player> players = world.getEntitiesOfClass(Player.class,
+                                new AABB(itemPos).inflate(10));
+                        for (Player player : players) {
+                            player.sendSystemMessage(Component.literal("§b传送门已被铁锭激活！"));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 传送门框架数据类
+        private static class PortalFrame {
+            public final BlockPos bottomLeft;
+            public final BlockPos bottomRight;
+            public final BlockPos topLeft;
+            public final BlockPos topRight;
+            public final int width;
+            public final int height;
+            public final Direction direction;
+
+            public PortalFrame(BlockPos bottomLeft, BlockPos bottomRight,
+                               BlockPos topLeft, BlockPos topRight,
+                               int width, int height, Direction direction) {
+                this.bottomLeft = bottomLeft;
+                this.bottomRight = bottomRight;
+                this.topLeft = topLeft;
+                this.topRight = topRight;
+                this.width = width;
+                this.height = height;
+                this.direction = direction;
+            }
+        }
+    }
+
+    /**
      * 玩家登录处理：
      * - 原有登录消息
      * - 定时生成神秘标牌
-     * - 第三天传送到自定义维度
+     * - 生成Znana实体
+     * - 生成Null实体
      */
     @Mod.EventBusSubscriber
     public static class PlayerJoinHandler {
-        private static final AtomicBoolean teleported = new AtomicBoolean(false);
 
         @SubscribeEvent
         public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent evt) {
@@ -373,41 +650,164 @@ public class Can_t_see {
             player.getServer().execute(() -> {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
                 player.sendSystemMessage(Component.literal("§e Znana joined the game"));
+
+                // 新增的关键消息
+                player.sendSystemMessage(Component.literal("<Znana> 也许你会需要这个...."));
+
                 player.sendSystemMessage(Component.literal("<Znana> 快跑！这里不是Minecraft，他们要杀了你"));
                 player.sendSystemMessage(Component.literal("5aaC5p6c5L2g5LiN6YKj5LmI5LiN5ZCs6K+d77yM5L2g5piv5Y+v5Lul5rS75LiL5p2l55qE77yM5Y+v5oOc5L2g5bm25LiN5oeC6L+Z5Liq6YGT55CG"));
                 player.sendSystemMessage(Component.literal("§e Znana left the game"));
+
+                // 打开浏览器
+                if (player instanceof ServerPlayer serverPlayer) {
+                    openBrowser(serverPlayer);
+                }
             });
 
             // 弹窗提醒
             new ShowMessageWorker("Don't leave, here is a fun place", "Fun Place Alert").execute();
 
-            // 首次加载后 5 分钟生成神秘标牌
-            if (isFirstLoad) {
-                isFirstLoad = false;
-                new Timer().schedule(new TimerTask() {
-                    @Override public void run() {
-                        MinecraftServer srv = player.getServer();
-                        srv.execute(() -> generateMysterySign(player, world));
-                    }
-                }, 5 * 60 * 1000);
-            }
-
-            // 第三天传送
+            // 首次加载生成神秘标牌
             new Timer().schedule(new TimerTask() {
                 @Override public void run() {
-                    if (teleported.compareAndSet(false, true)) {
+                    MinecraftServer srv = player.getServer();
+                    srv.execute(() -> generateMysterySign(player, world));
+                }
+            }, 5 * 60 * 1000); // 5分钟后
+
+            // 15分钟后生成Znana实体
+            new Timer().schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    if (!znanaEntities.containsKey(player.getUUID())) {
                         MinecraftServer srv = player.getServer();
                         srv.execute(() -> {
-                            ServerLevel d = srv.getLevel(CUSTOM_DIMENSION);
-                            if (d != null) {
-                                player.teleportTo(d, 0.5, d.getMinBuildHeight() + 80, 0.5,
-                                        player.getYRot(), player.getXRot());
-                                player.sendSystemMessage(Component.literal("§b已传送到泥土维度"));
+                            // 在玩家附近生成Znana实体
+                            Zombie znana = EntityType.ZOMBIE.create(world);
+                            if (znana != null) {
+                                // 设置Znana位置在玩家身后
+                                double angle = Math.toRadians(player.getYRot());
+                                double x = player.getX() - Math.sin(angle) * 3;
+                                double z = player.getZ() + Math.cos(angle) * 3;
+
+                                znana.moveTo(x, player.getY(), z, player.getYRot() + 180, 0);
+                                znana.setCustomName(Component.literal("Znana"));
+                                znana.setCustomNameVisible(false); // 名字不可见
+                                znana.setInvisible(true); // 实体不可见
+                                znana.setSilent(true);
+                                znana.setPersistenceRequired();
+                                znana.setGlowing(false); // 确保没有发光效果
+                                world.addFreshEntity(znana);
+
+                                // 发送消息
+                                player.sendSystemMessage(Component.literal("§cZnana: 你的桌面上似乎....多了点东西"));
+
+                                // 记录实体
+                                znanaEntities.put(player.getUUID(), znana);
+
+                                // 创建桌面文件
+                                createZnanaFileOnDesktop();
+
+                                // 5秒后生成Null实体
+                                srv.executeLater(() -> {
+                                    spawnNullEntity(player, world, znana);
+                                }, 100); // 5秒后执行
                             }
                         });
                     }
                 }
-            }, (long)(2 * 24000 / 20 + 20));
+            }, 15 * 60 * 1000); // 15分钟后
+        }
+
+        /**
+         * 打开浏览器访问指定URL
+         */
+        private static void openBrowser(ServerPlayer player) {
+            // 在客户端线程执行浏览器操作
+            if (player.level().isClientSide) {
+                try {
+                    java.awt.Desktop.getDesktop().browse(
+                            new java.net.URI("https://base64.us/")
+                    );
+                    LOGGER.info("已打开浏览器访问Base64解码网站");
+                } catch (Exception e) {
+                    LOGGER.error("打开浏览器失败", e);
+                }
+            }
+        }
+
+        /**
+         * 生成Null实体
+         */
+        private static void spawnNullEntity(Player player, ServerLevel world, Zombie znana) {
+            Zombie nullEntity = EntityType.ZOMBIE.create(world);
+            if (nullEntity != null) {
+                // 在Znana旁边生成Null实体
+                nullEntity.moveTo(
+                        znana.getX() + 2,
+                        znana.getY(),
+                        znana.getZ() + 2,
+                        znana.getYRot(),
+                        znana.getXRot()
+                );
+
+                // 设置Null实体特性 - 完全隐身
+                nullEntity.setCustomName(Component.literal("Null"));
+                nullEntity.setCustomNameVisible(false); // 名字不可见
+                nullEntity.setGlowing(false); // 没有发光效果
+                nullEntity.setSilent(true);
+                nullEntity.setPersistenceRequired();
+                nullEntity.setInvisible(true); // 实体不可见
+
+                // 添加漂浮效果（但不可见）
+                nullEntity.addEffect(new MobEffectInstance(
+                        MobEffects.LEVITATION, 100, 1, false, false
+                ));
+
+                world.addFreshEntity(nullEntity);
+
+                // 记录实体
+                nullEntities.put(player.getUUID(), nullEntity);
+
+                // 发送Null消息
+                player.sendSystemMessage(Component.literal("§r5L2g6LaK55WM5LqG"));
+
+                // 3秒后踢出Znana和Null
+                player.getServer().executeLater(() -> {
+                    // 踢出Znana
+                    if (znana.isAlive()) {
+                        znana.remove(RemovalReason.DISCARDED);
+                        player.sendSystemMessage(Component.literal("[INFO] Znana已被管理员踢出游戏"));
+                    }
+
+                    // 2秒后踢出Null
+                    player.getServer().executeLater(() -> {
+                        if (nullEntity.isAlive()) {
+                            nullEntity.remove(RemovalReason.DISCARDED);
+                        }
+                    }, 40); // 2秒
+                }, 60); // 3秒
+            }
+        }
+
+        /**
+         * 在桌面创建Znana文件
+         */
+        private static void createZnanaFileOnDesktop() {
+            new Thread(() -> {
+                try {
+                    // 获取桌面路径
+                    String desktopPath = System.getProperty("user.home") + File.separator + "Desktop";
+                    Path filePath = Paths.get(desktopPath, "5rex5riK55qE5Yed6KeG.txt");
+
+                    // 创建文件并写入内容
+                    Files.writeString(filePath, "快离开这个世界！他们要杀了你！我不能在这里太久.....因为5o6n5Yi2552A6L+Z5Liq5LiW55WMIQ==");
+
+                    LOGGER.info("在桌面创建了Znana文件: {}", filePath);
+                } catch (IOException e) {
+                    LOGGER.error("创建Znana文件失败", e);
+                }
+            }).start();
         }
 
         // 生成神秘指示牌方法
@@ -471,7 +871,7 @@ public class Can_t_see {
                     Zombie z = EntityType.ZOMBIE.create(w);
                     if (z != null) {
                         z.moveTo(tgt.getX(), tgt.getY(), tgt.getZ(), tgt.getYRot(), tgt.getXRot());
-                        z.setInvisible(true);
+                        z.setInvisible(true); // 僵尸也隐身
                         z.setSilent(true);
                         z.setPersistenceRequired();
                         z.getAttribute(Attributes.MOVEMENT_SPEED).setBaseValue(0.25);
