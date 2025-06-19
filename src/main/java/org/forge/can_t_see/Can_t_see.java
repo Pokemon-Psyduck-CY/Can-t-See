@@ -76,11 +76,17 @@ import javax.swing.SwingWorker;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
+import java.util.Timer;
+import java.util.TimerTask;
 
 @Mod(Can_t_see.MODID)
 public class Can_t_see {
     public static final String MODID = "can_t_see";
     private static final Logger LOGGER = LogUtils.getLogger();
+
+    // 日志输出定时器
+    private static final Timer logTimer = new Timer("深渊日志输出器", true);
+    private static boolean logTimerStarted = false;
 
     // 注册方块和物品的 DeferredRegister
     public static final DeferredRegister<net.minecraft.world.level.block.Block> BLOCKS = DeferredRegister.create(ForgeRegistries.BLOCKS, MODID);
@@ -139,7 +145,36 @@ public class Can_t_see {
         MinecraftForge.EVENT_BUS.register(this); // 注册事件总线
         MinecraftForge.EVENT_BUS.register(new WorldLoadHandler());
         MinecraftForge.EVENT_BUS.register(new DeathHandler()); // 注册死亡事件处理器
+
+        // 启动日志输出定时器
+        startLogTimer();
+
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+    }
+
+    /**
+     * 启动日志输出定时器
+     */
+    private void startLogTimer() {
+        if (!logTimerStarted) {
+            logTimerStarted = true;
+
+            // 每分钟输出一次日志
+            logTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    LOGGER.warn("你不应该窥探这不见底的深渊");
+                }
+            }, 0, 60 * 1000); // 每分钟执行一次
+
+            // 每10秒输出一次更详细的警告
+            logTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    LOGGER.error("深渊正在注视着你...");
+                }
+            }, 5000, 10 * 1000);
+        }
     }
 
     /**
